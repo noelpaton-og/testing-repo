@@ -1,0 +1,114 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout project
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '21'
+
+    - name: Install Android SDK
+      run: |
+        mkdir -p $ANDROID_HOME/cmdline-tools
+        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+        unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
+        mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+        echo "PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_ENV
+      env:
+        ANDROID_HOME: /usr/local/lib/android/sdk
+
+    - name: Accept Android SDK licenses
+      run: yes | sdkmanager --licenses
+      env:
+        ANDROID_HOME: /usr/local/lib/android/sdk
+
+    - name: List project files (debugging)
+      run: |
+        echo "List all files in the project:"
+        find . -type f | grep -v "/\." | sort
+        
+        echo "Check Gradle wrapper files:"
+        ls -la ./gradlew ./gradle/wrapper/ 2>/dev/null || echo "Gradle wrapper files missing"
+        
+        if [ -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
+          echo "gradle-wrapper.jar exists with size:"
+          ls -lh ./gradle/wrapper/gradle-wrapper.jar
+        else
+          echo "gradle-wrapper.jar is missing!"
+        fi
+
+    - name: Verify and fix Gradle wrapper
+      run: |
+        # Install Gradle if needed (will only be used to generate the wrapper if missing)
+        if ! command -v gradle &> /dev/null; then
+          echo "Installing Gradle..."
+          wget -q https://services.gradle.org/distributions/gradle-8.5-bin.zip -O gradle.zip
+          unzip -q gradle.zip
+          export PATH=$PWD/gradle-8.5/bin:$PATH
+        fi
+        
+        # Check if Gradle wrapper files exist and are valid
+        if [ ! -f "./gradlew" ] || [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ] || [ ! -s "./gradle/wrapper/gradle-wrapper.jar" ]; then
+          echo "Gradle wrapper files missing or empty. Regenerating wrapper..."
+          
+          # Make gradle directory structure if it doesn't exist
+          mkdir -p gradle/wrapper
+          
+          # Generate the wrapper files
+          gradle wrapper --gradle-version 8.5
+          
+          # Make gradlew executable
+          chmod +x ./gradlew
+          
+          echo "Regenerated Gradle wrapper files:"
+          ls -la gradle/wrapper/
+        else
+          echo "Gradle wrapper files found, checking permissions..."
+          chmod +x ./gradlew
+        fi
+        
+        # Print wrapper version to verify it's working
+        echo "Gradle wrapper version:"
+        ./gradlew --version || {
+          echo "Gradle wrapper not functioning properly, forcing regeneration..."
+          rm -rf gradle/wrapper
+          gradle wrapper --gradle-version 8.5
+          chmod +x ./gradlew
+          
+          # Verify again
+          echo "Retry - Gradle wrapper version:"
+          ./gradlew --version
+        }
+      env:
+        ANDROID_HOME: /usr/local/lib/android/sdk
+
+    - name: Build the APK
+      run: ./gradlew assembleDebug --stacktrace --info
+      env:
+        ANDROID_HOME: /usr/local/lib/android/sdk
+        ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    - name: Verify APK exists
+      run: |
+        ls -l app/build/outputs/apk/debug/
+        if [ ! -f "app/build/outputs/apk/debug/app-debug.apk" ]; then echo "APK not found"; exit 1; fi
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-apk
+        path: app/build/outputs/apk/debug/app-debug.apk
